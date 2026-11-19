@@ -60,6 +60,12 @@ export default async (request) => {
       console.error('Coinso invoice failed', response.status, invoice?.error_code, explanation);
       return result({ error: 'Coinso не смог создать счёт. Проверьте способы оплаты и ограничения по сумме.' }, 502);
     }
+    // Safety: while RCON delivery is disabled, NEVER expose a real payment link.
+    // Coinso sets test_mode=true for simulated payments made in dashboard Test mode.
+    if (process.env.ENABLE_AUTO_GRANT !== 'true' && invoice.test_mode !== true) {
+      console.warn('Coinso created a live invoice while auto-grant is disabled. URL withheld.');
+      return result({ error: 'Тестовая оплата недоступна: включите тестовый режим в Coinso. Реальные платежи сейчас заблокированы.' }, 503);
+    }
     const url = new URL(invoice.payment_url);
     if (url.protocol !== 'https:' || url.hostname !== 'coinso.io')
       throw new Error('Unexpected payment URL');
