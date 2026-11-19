@@ -1,81 +1,62 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import {
-  PRODUCT_PRICES, result, configured, orderStore, rankGroup,
-  validNickname, publicSite
+  PRODUCTS, anypayConfigReady, groupFor, orderStore, responseJSON,
+  sha256, siteOrigin, validNick
 } from './_lib/common.mjs';
 
 export default async (request) => {
-  if (request.method !== 'POST') return result({ error: 'Используйте POST' }, 405);
-  if (!configured()) return result({ error: 'Оплата пока не активирована администратором.' }, 503);
-
-  let data;
-  try { data = await request.json(); }
-  catch { return result({ error: 'Неверный формат запроса' }, 400); }
-
-  if (!data || typeof data !== 'object' || Array.isArray(data))
-    return result({ error: 'Неверные данные заказа' }, 400);
-  const productId = Number(data.productId);
-  const nickname = typeof data.nickname === 'string' ? data.nickname.trim() : '';
-  const product = PRODUCT_PRICES[productId];
-  const group = rankGroup(productId);
-  if (!product || !group) return result({ error: 'Выдача этой привилегии ещё не настроена.' }, 400);
-  if (!validNickname(nickname)) return result({ error: 'Введите корректный Minecraft-ник (3–16 символов, латиница, цифры, _).' }, 400);
-  // Price comes ONLY from the server-side catalog, never from the browser.
+  if (request.method !== 'POST') return responseJSON({ error: 'Используйте POST' }, 405);
+  // Safety: No live invoice if RCON auto-delivery or AnyPay API verification is not configured.
+  if (!anypayConfigReady()) return responseJSON({
+    error: 'Оплата пока не активирована администратором. Настройте AnyPay и автовыдачу.'
+  }, 503);
+  let payload;
+  try { payload = await request.json(); }
+  catch { return responseJSON({ error: 'Неверный формат запроса' }, 400); }
+  const id = Number(payload?.productId);
+  const product = PRODUCTS[id];
+  const nick = typeof payload?.nickname === 'string' ? payload.nickname.trim() : '';
+  const group = groupFor(id);
+  if (!product || !group) return responseJSON({ error: 'Выдача привилегии не настроена.' }, 400);
+  if (!validNick(nick)) return responseJSON({ error: 'Ник Minecraft должен содержать 3–16 символов (латиница, цифры, _).' }, 400);
 
   const store = orderStore();
-  const orderId = randomUUID();
-  const key = `orders/${orderId}`;
-  const now = new Date().toISOString();
-  const order = {
-    id: orderId, productId, title: product.title, amount: product.amount,
-    nickname, group, invoiceId: null, state: 'created', createdAt: now
-  };
+  let payId, saved, order;
   try {
-    const saved = await store.setJSON(key, order, { onlyIfNew: true });
-    if (!saved.modified) throw new Error('Cannot reserve order');
+    // AnyPay order identifiers must be numeric, up to 15 digits. Retry on collision.
+    for (let attempt=0; attempt<5; attempt++) {
+      payId = String(randomInt(100_000_000_000, 999_999_999_999));
+      order = {
+        payId, productId:id, title:product.title, amount:product.amount,
+        nickname:nick, group, state:'awaiting-payment',
+        createdAt:new Date().toISOString()
+      };
+      saved = await store.setJSON(`orders/${payId}`,order,{onlyIfNew:true});
+      if (saved.modified) break;
+    }
+    if (!saved?.modified) throw new Error('Failed to create unique order');
 
-    const payload = {
-      project_id: Number(process.env.COINSO_PROJECT_ID),
-      amount: product.amount,
-      description: `MaffyWorld: ${product.title} для ${nickname}`,
-      custom: orderId,
-      integration_type: 'standard',
-      success_url: `${publicSite()}/?payment=return`,
-      fail_url: `${publicSite()}/?payment=failed`
-    };
-    const response = await fetch('https://coinso.io/api/payment/create', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.COINSO_SECRET_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(8500)
-    });
-    const invoice = await response.json();
-    if (!response.ok || invoice.success !== true || typeof invoice.invoice_id !== 'string' ||
-        typeof invoice.payment_url !== 'string') {
-      const explanation = invoice?.error_description || invoice?.message || 'Создать счёт не удалось';
-      // Do not reveal internal API diagnostics or credentials to the buyer.
-      console.error('Coinso invoice failed', response.status, invoice?.error_code, explanation);
-      return result({ error: 'Coinso не смог создать счёт. Проверьте способы оплаты и ограничения по сумме.' }, 502);
-    }
-    // Safety: while RCON delivery is disabled, NEVER expose a real payment link.
-    // Coinso sets test_mode=true for simulated payments made in dashboard Test mode.
-    if (process.env.ENABLE_AUTO_GRANT !== 'true' && invoice.test_mode !== true) {
-      console.warn('Coinso created a live invoice while auto-grant is disabled. URL withheld.');
-      return result({ error: 'Тестовая оплата недоступна: включите тестовый режим в Coinso. Реальные платежи сейчас заблокированы.' }, 503);
-    }
-    const url = new URL(invoice.payment_url);
-    if (url.protocol !== 'https:' || url.hostname !== 'coinso.io')
-      throw new Error('Unexpected payment URL');
-    const updated = await store.setJSON(key, {
-      ...order, invoiceId: invoice.invoice_id, state: 'awaiting-payment'
-    }, { onlyIfMatch: saved.etag });
-    if (!updated.modified) throw new Error('Order could not be committed');
-    return result({ payment_url: url.href, invoice_id: invoice.invoice_id });
-  } catch (error) {
-    console.error('create-payment error:', error instanceof Error ? error.message : 'unknown');
-    return result({ error: 'Не удалось начать оплату. Попробуйте ещё раз позже.' }, 503);
+    // AnyPay SCI SHA256 form signature: merchant_id:pay_id:amount:currency:
+    // desc:success_url:fail_url:secret_key
+    // https://anypay.io/doc/sci
+    const merchantId = process.env.ANYPAY_PROJECT_ID;
+    const amount = product.amount.toFixed(2);
+    const currency = 'RUB';
+    const desc = `MaffyWorld: ${product.title} (${nick})`;
+    const successUrl = `${siteOrigin()}/?payment=return`;
+    const failUrl = `${siteOrigin()}/?payment=failed`;
+    const sign = sha256([
+      merchantId, payId, amount, currency, desc, successUrl,
+      failUrl, process.env.ANYPAY_SECRET_KEY
+    ].join(':'));
+    const url = new URL('https://anypay.io/merchant');
+    for (const [key,value] of Object.entries({
+      merchant_id:merchantId, pay_id:payId, amount, currency,
+      desc, success_url:successUrl, fail_url:failUrl, lang:'ru',sign
+    })) url.searchParams.set(key,value);
+    return responseJSON({ payment_url:url.href });
+  } catch(error) {
+    console.error('AnyPay create-payment:', error instanceof Error ? error.message : 'unknown');
+    return responseJSON({ error: 'Не удалось подготовить оплату. Попробуй позже.' }, 503);
   }
 };
