@@ -1,6 +1,7 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { getStore } from '@netlify/blobs';
 
-export const PRODUCT_PRICES = Object.freeze({
+export const PRODUCTS = Object.freeze({
   1: { title: 'Сержант', amount: 29 },
   2: { title: 'Доктор', amount: 49 },
   3: { title: 'Шериф', amount: 89 },
@@ -10,53 +11,75 @@ export const PRODUCT_PRICES = Object.freeze({
   7: { title: 'Мафиша', amount: 309 }
 });
 
-export const result = (data, status = 200) => Response.json(data, {
-  status,
-  headers: {
+export function responseJSON(payload, status = 200) {
+  return Response.json(payload, { status, headers: {
     'cache-control': 'no-store',
     'x-content-type-options': 'nosniff'
-  }
-});
-
+  }});
+}
+export function responseText(payload, status = 200) {
+  return new Response(payload, { status, headers: {
+    'cache-control': 'no-store',
+    'content-type': 'text/plain; charset=utf-8'
+  }});
+}
 export function orderStore() {
-  // Persistent across site deploys; strong reads needed for webhook/retry handling.
-  return getStore({ name: 'maffyworld-coinso-orders', consistency: 'strong' });
+  return getStore({ name: 'maffyworld-anypay-orders', consistency: 'strong' });
 }
-
-export function rankGroup(productId) {
-  // Intentionally NO guessed internal LuckPerms group names.
-  const map = JSON.parse(process.env.RANK_GROUPS_JSON || '{}');
-  const group = map[String(productId)];
-  return typeof group === 'string' && /^[a-z0-9_.-]{1,64}$/i.test(group)
-    ? group : null;
+export function groupFor(id) {
+  let mapping;
+  try { mapping = JSON.parse(process.env.RANK_GROUPS_JSON || '{}'); }
+  catch { return null; }
+  const group = mapping?.[String(id)];
+  return typeof group === 'string' && /^[a-z0-9_.-]{1,64}$/i.test(group) ? group : null;
 }
-
-export function validNickname(name) {
-  return typeof name === 'string' && /^[A-Za-z0-9_]{3,16}$/.test(name);
+export function validNick(nickname) {
+  return typeof nickname === 'string' && /^[A-Za-z0-9_]{3,16}$/.test(nickname);
 }
-
-export function configured() {
-  // Invoice creation can be tested without enabling RCON delivery.
-  // When ENABLE_AUTO_GRANT=false, create-payment.mjs only returns a test-mode invoice.
-  return process.env.ENABLE_PAYMENTS === 'true' &&
-    !!process.env.COINSO_SECRET_KEY &&
-    /^\d+$/.test(process.env.COINSO_PROJECT_ID || '');
-}
-
-export function publicSite() {
-  const domain = process.env.PUBLIC_SITE_URL || 'https://maffyworld.ru';
-  const url = new URL(domain);
-  if (url.protocol !== 'https:') throw new Error('PUBLIC_SITE_URL must be https');
+export function siteOrigin() {
+  const url = new URL(process.env.PUBLIC_SITE_URL || 'https://maffyworld.ru');
+  if (url.protocol !== 'https:') throw new Error('Site URL must be HTTPS');
   return url.origin;
 }
+export function anypayConfigReady() {
+  return process.env.ENABLE_PAYMENTS === 'true' &&
+    process.env.ENABLE_AUTO_GRANT === 'true' &&
+    /^\d+$/.test(process.env.ANYPAY_PROJECT_ID || '') &&
+    !!process.env.ANYPAY_SECRET_KEY &&
+    /^\d+$/.test(process.env.ANYPAY_API_ID || '') &&
+    !!process.env.ANYPAY_API_KEY &&
+    !!process.env.RCON_HOST && !!process.env.RCON_PORT && !!process.env.RCON_PASSWORD;
+}
+export function sha256(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+export function matchingHex(a,b){
+  if (typeof a!=='string'||!/^[a-f0-9]{64}$/i.test(a)||typeof b!=='string'||!/^[a-f0-9]{64}$/i.test(b)) return false;
+  return timingSafeEqual(Buffer.from(a.toLowerCase(),'hex'),Buffer.from(b.toLowerCase(),'hex'));
+}
 
-export async function coinsoStatus(invoiceId) {
-  if (typeof invoiceId !== 'string' || !/^[A-Za-z0-9_-]{4,64}$/.test(invoiceId))
-    throw new Error('Incorrect invoice ID');
-  const url = `https://coinso.io/api/payment/status?uuid=${encodeURIComponent(invoiceId)}`;
-  const response = await fetch(url, { signal: AbortSignal.timeout(7000) });
-  if (!response.ok) throw new Error(`Coinso status HTTP ${response.status}`);
-  const data = await response.json();
-  if (!data || data.success !== true) throw new Error('Coinso status not confirmed');
-  return data;
+// Verify independently with AnyPay API; never trust the browser success redirect.
+// https://anypay.io/doc/api/payments
+export async function verifyPaidWithAnyPay(payId, transactionId) {
+  const apiId = process.env.ANYPAY_API_ID;
+  const projectId = process.env.ANYPAY_PROJECT_ID;
+  const apiKey = process.env.ANYPAY_API_KEY;
+  const sign = sha256(`payments${apiId}${projectId}${apiKey}`);
+  const form = new FormData();
+  form.set('project_id', projectId);
+  form.set('pay_id', String(payId));
+  form.set('sign', sign);
+  const res = await fetch(`https://anypay.io/api/payments/${encodeURIComponent(apiId)}`, {
+    method: 'POST', headers: { Accept: 'application/json' }, body: form,
+    signal: AbortSignal.timeout(9500)
+  });
+  if (!res.ok) throw new Error(`AnyPay API HTTP ${res.status}`);
+  const data = await res.json();
+  const payments = data?.result?.payments;
+  if (!payments || typeof payments !== 'object') throw new Error('AnyPay API returned no payments');
+  const matching = Object.values(payments).find(p =>
+    String(p?.pay_id) === String(payId) &&
+    String(p?.transaction_id) === String(transactionId));
+  if (!matching) throw new Error('Payment is absent from API');
+  return matching;
 }
