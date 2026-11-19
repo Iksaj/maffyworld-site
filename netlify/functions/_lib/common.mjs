@@ -36,14 +36,11 @@ export function validNickname(name) {
 }
 
 export function configured() {
+  // Invoice creation can be tested without enabling RCON delivery.
+  // When ENABLE_AUTO_GRANT=false, create-payment.mjs only returns a test-mode invoice.
   return process.env.ENABLE_PAYMENTS === 'true' &&
-    process.env.ENABLE_AUTO_GRANT === 'true' &&
     !!process.env.COINSO_SECRET_KEY &&
-    /^\d+$/.test(process.env.COINSO_PROJECT_ID || '') &&
-    !!process.env.RCON_HOST &&
-    Number.isInteger(Number(process.env.RCON_PORT)) &&
-    Number(process.env.RCON_PORT) > 0 &&
-    !!process.env.RCON_PASSWORD;
+    /^\d+$/.test(process.env.COINSO_PROJECT_ID || '');
 }
 
 export function publicSite() {
