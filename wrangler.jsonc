@@ -12,7 +12,7 @@
     {
       "binding": "ORDERS",
       "database_name": "maffyworld-orders",
-      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+      "database_id": "ece877ce-5aef-4bea-bdd1-94ad2bf64bb4"
     }
   ],
   "vars": {
