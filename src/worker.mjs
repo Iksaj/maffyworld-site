@@ -226,7 +226,25 @@ async function deliveryAck(request, env) {
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
-    if (path === '/api/health') return json({site:'MaffyWorld',api:true,paymentsConfigured:configReady(env)});
+    if (path === '/api/health') {
+      let databaseReady = false;
+      try {
+        if (env.ORDERS) {
+          const tables = await env.ORDERS.prepare(
+            "SELECT COUNT(DISTINCT name) AS count FROM sqlite_master WHERE type='table' AND name IN ('orders','agent_status')"
+          ).first();
+          databaseReady = Number(tables?.count) === 2;
+        }
+      } catch (error) {
+        console.error('D1 health check failed:', error instanceof Error ? error.message : 'unknown');
+      }
+      return json({
+        site: 'MaffyWorld',
+        api: true,
+        databaseReady,
+        paymentsConfigured: databaseReady && configReady(env)
+      });
+    }
     if (path === '/api/create-payment' || path === '/.netlify/functions/create-payment')
       return createPayment(request,env);
     if (path === '/api/anypay-webhook' || path === '/.netlify/functions/anypay-webhook')
