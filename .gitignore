@@ -1,0 +1,9 @@
+# Never commit Cloudflare, AnyPay or Minecraft secrets
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+.wrangler/
+node_modules/
+npm-debug.log*
