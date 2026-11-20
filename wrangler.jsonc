@@ -1,0 +1,22 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "maffyworld-site",
+  "main": "src/worker.mjs",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/.netlify/functions/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "ORDERS",
+      "database_name": "maffyworld-orders",
+      "database_id": "ece877ce-5aef-4bea-bdd1-94ad2bf64bb4"
+    }
+  ],
+  "vars": {
+    "ENABLE_PAYMENTS": "false",
+    "PUBLIC_SITE_URL": "https://maffyworld-site.artjommoroz939.workers.dev"
+  }
+}
