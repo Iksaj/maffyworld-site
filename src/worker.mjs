@@ -66,9 +66,10 @@ async function createPayment(request, env) {
     input = JSON.parse(raw);
   } catch { return json({error:'Некорректный JSON.'},400); }
   const id = input?.productId;
-  const product = CATALOG[id];
+  // Accept only numeric catalog IDs; never allow inherited object properties.
+  const product = Number.isInteger(id) && Object.hasOwn(CATALOG, id) ? CATALOG[id] : null;
   const nick = typeof input?.nickname === 'string' ? input.nickname.trim() : '';
-  const qty = id >= 11 && id <= 14 ? input?.quantity : 1;
+  const qty = id >= 11 && id <= 14 ? (input?.quantity ?? 1) : 1;
   if (!product || !NICK_RE.test(nick) || !Number.isInteger(qty) || qty < 1 || qty > 50)
     return json({error:'Проверь товар, количество и ник Minecraft (3–16 символов).'},400);
   const command = commandFor(env, id, nick, qty);
