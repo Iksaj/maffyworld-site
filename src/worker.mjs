@@ -153,7 +153,7 @@ async function anypayWebhook(request, env) {
       await env.ORDERS.prepare("UPDATE orders SET state='test-paid' WHERE pay_id=? AND state='awaiting-payment'").bind(payId).run();
       return plain('OK');
     }
-    if (String(test) !== '0' || !ID_RE.test(String(transaction_id || ''))) return plain('Invalid mode',400);
+    if ((test !== undefined && String(test) !== '0') || !ID_RE.test(String(transaction_id || ''))) return plain('Invalid mode',400);
     if (['paid','claimed','delivered','manual-review'].includes(order.state) &&
         order.transaction_id === String(transaction_id)) return plain('OK');
     if (order.state !== 'awaiting-payment') return plain('Order state mismatch',409);
