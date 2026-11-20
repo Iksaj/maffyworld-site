@@ -8,6 +8,13 @@ const CATALOG = Object.freeze({
   13: ['Кейс с MaffyCoins', 45],
   14: ['Кейс с донат-вещами', 75]
 });
+// Case IDs match the public shop catalog. RCON commands omit the leading "/" used in-game.
+const CASE_KEYS = Object.freeze({
+  11: 'donate', // Донат-Кейс
+  12: 'money',  // Игровая валюта
+  13: 'tokens', // Маффи токены
+  14: 'items'   // Донат-вещи
+});
 const NICK_RE = /^[A-Za-z0-9_]{3,16}$/;
 const ID_RE = /^\d{1,15}$/;
 
@@ -28,7 +35,12 @@ async function sha256(text) {
   const hashed = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(hashed), b => b.toString(16).padStart(2,'0')).join('');
 }
-function commandFor(env, id, nickname, quantity) {
+export function commandFor(env, id, nickname, quantity) {
+  if (!NICK_RE.test(nickname) || !Number.isInteger(quantity) || quantity < 1 || quantity > 50)
+    return null;
+  // Only these four confirmed crate keys can be issued. Never take a command from the customer.
+  if (Object.hasOwn(CASE_KEYS, id))
+    return `cases givekey ${nickname} ${CASE_KEYS[id]} ${quantity}`;
   let commands;
   try { commands = JSON.parse(env.DELIVERY_COMMANDS_JSON || '{}'); }
   catch { return null; }
